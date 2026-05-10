@@ -74,12 +74,15 @@ def train():
         class_dir = os.path.join(DATASET_PATH, class_name)
         files = [f for f in os.listdir(class_dir) if os.path.isfile(os.path.join(class_dir, f))]
         
-        # Calculate multiplier to balance classes (target ~1000 samples per class)
-        # Assuming each video gives ~30 samples, images give 1.
+        # Calculate multiplier to balance classes (target ~2000 samples per class)
         if class_name == 'how are you':
-            multiplier = 25 # 40 images * 25 = 1000
+            multiplier = 60
+        elif class_name == 'good':
+            multiplier = 40
+        elif class_name == 'morning':
+            multiplier = 80
         else:
-            multiplier = 5  # ~30 frames * ~11-21 videos * 5 = 1500-3000
+            multiplier = 10
             
         print(f"Processing {class_name} ({len(files)} files, x{multiplier} aug)...")
         
@@ -90,7 +93,7 @@ def train():
             if ext.endswith(('.mov', '.mp4', '.avi')):
                 cap = cv2.VideoCapture(file_path)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                sample_rate = max(1, total_frames // 30)
+                sample_rate = max(1, total_frames // 40) # Sample more frames
                 frame_idx = 0
                 while cap.isOpened():
                     ret, frame = cap.read()
@@ -116,15 +119,14 @@ def train():
                 if results.hand_landmarks:
                     for hand_lms in results.hand_landmarks:
                         feats = extract_dhg_features(hand_lms)
-                        for aug in augment_features(feats, multiplier):
+                        for aug in augment_features(feats, multiplier * 2): # Augment more for static images
                             X.append(aug)
                             y.append(class_name)
 
     # ADD SYNTHETIC "NONE" CLASS (Background Rejection)
-    # This generates random hand landmarks that are topologically possible but mean nothing
-    print("Generating Synthetic 'None' class samples...")
-    for _ in range(1000):
-        # Base on a "relaxed" hand pose with high jitter
+    print("Generating High-Quality Synthetic 'None' samples...")
+    for _ in range(2000):
+        # Base on a "relaxed" hand pose with high jitter to represent non-gesture hands
         base_feats = np.random.uniform(-1, 1, 68) 
         X.append(base_feats)
         y.append("None")
@@ -138,13 +140,15 @@ def train():
     le = LabelEncoder()
     y_encoded = le.fit_transform(y)
 
-    print(f"Training Robust MLP on {len(X)} samples across {len(le.classes_)} classes...")
+    print(f"Training Ultra-Accuracy MLP on {len(X)} samples across {len(le.classes_)} classes...")
     mlp = MLPClassifier(
-        hidden_layer_sizes=(512, 256, 128, 64),
-        max_iter=5000,
-        alpha=0.001, # Higher regularization to prevent overconfidence
+        hidden_layer_sizes=(1024, 512, 256, 128),
+        max_iter=10000,
+        alpha=0.0001, 
+        solver='adam',
+        learning_rate='adaptive',
         early_stopping=True,
-        validation_fraction=0.1,
+        validation_fraction=0.15,
         random_state=42
     )
     
