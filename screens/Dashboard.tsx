@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Dimensions, ScrollView, Animated, Platform, Modal, BlurView } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Dimensions, ScrollView, Animated, Platform, Modal } from 'react-native';
 import { COLORS, SPACING, BORDER_RADIUS } from '../constants/Theme';
 import { Shield, Battery, Signal, MessageSquare, User, Camera as CameraIcon, Play, Volume2, Mic, Sliders, Maximize2, RefreshCcw, Activity, Send, Globe, Eye, EyeOff, ChevronDown, ChevronUp, Trash2, AlertTriangle, XCircle, MicOff, Clock, Zap, Cpu, BarChart3, Database, Power, Hand, SwitchCamera, LayoutTemplate } from 'lucide-react-native';
 import { Audio } from 'expo-av';
@@ -60,11 +60,13 @@ export default function Dashboard({ onSystemMessage, systemLog }: { onSystemMess
   async function playAlarm() {
     try {
       const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_5177259021.mp3?filename=police-siren-99021.mp3' },
+        { uri: 'https://assets.mixkit.co/active_storage/sfx/995/995-preview.mp3' }, // Classic Emergency Siren
         { shouldPlay: true, isLooping: true, volume: 1.0 }
       );
       setSound(newSound);
-    } catch (e) {}
+    } catch (e) {
+      console.warn("SOS Alarm Error", e);
+    }
   }
 
   async function stopAlarm() {
@@ -97,7 +99,7 @@ export default function Dashboard({ onSystemMessage, systemLog }: { onSystemMess
           if (known.includes(word) && !processedWords.current.has(word)) {
             processedWords.current.add(word);
             addChatMessage(word, 'SPEAKER');
-            setTranslationWords(prev => Array.from(new Set([...prev, word])).slice(-4));
+            setTranslationWords(prev => Array.from(new Set([...prev, word])).slice(-10));
           }
         });
       };
@@ -120,14 +122,23 @@ export default function Dashboard({ onSystemMessage, systemLog }: { onSystemMess
   };
 
   const addChatMessage = (text: string, sender: 'SIGNER' | 'SPEAKER') => {
-    const newMessage: ChatMessage = {
-      id: Math.random().toString(36).substr(2, 9),
-      text: text.toUpperCase(),
-      sender,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-    setChatMessages(prev => [...prev, newMessage].slice(-20));
-    setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 100);
+    // Prevent duplicate consecutive messages
+    setChatMessages(prev => {
+      if (prev.length > 0 && prev[prev.length - 1].text === text.toUpperCase() && prev[prev.length - 1].sender === sender) {
+        return prev;
+      }
+      
+      const newMessage: ChatMessage = {
+        id: Math.random().toString(36).substr(2, 9),
+        text: text.toUpperCase(),
+        sender,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      
+      const next = [...prev, newMessage].slice(-20);
+      setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 100);
+      return next;
+    });
   };
 
   const clearHistory = () => {
@@ -139,29 +150,63 @@ export default function Dashboard({ onSystemMessage, systemLog }: { onSystemMess
   };
 
   // Masterwork: Gesture Handling
+  const clearTimer = useRef<any>(null);
+
   const onGesture = (gesture: string, index: number, confidence?: number, probs?: any) => {
+    if (gesture === 'GESTURE_END') {
+      if (sentenceTimer.current) {
+        clearTimeout(sentenceTimer.current);
+        processSentence();
+      }
+      return;
+    }
+
     if (gesture === 'CLEAR_HUD' || probs) setAiConfidence(probs || {});
     if (!isSignActive || gesture === 'CLEAR_HUD') return;
+
+    // Reset 10s Auto-Clear Timer on any activity
+    if (clearTimer.current) clearTimeout(clearTimer.current);
+    clearTimer.current = setTimeout(() => {
+      clearHistory();
+    }, 10000);
 
     if (onSystemMessage) {
       onSystemMessage({ nativeEvent: { data: JSON.stringify({ type: 'GESTURE', value: gesture }) } } as any);
     }
 
     setCurrentSentence(prev => {
+      // De-duplicate: Don't add the same word twice consecutively in a short window
+      if (prev.length > 0 && prev[prev.length - 1] === gesture) return prev;
+      
       const next = [...prev, gesture];
       if (sentenceTimer.current) clearTimeout(sentenceTimer.current);
       sentenceTimer.current = setTimeout(() => {
-        if (next.length > 0) {
-          const finalPhrase = next.join(' ');
-          addChatMessage(finalPhrase, 'SIGNER');
-          if (onSystemMessage) {
-            onSystemMessage({ nativeEvent: { data: JSON.stringify({ type: 'TTS', text: finalPhrase }) } } as any);
-          }
-          setTranslationWords(p => Array.from(new Set([...p, ...next])).slice(-4));
-          setCurrentSentence([]);
-        }
-      }, 2500);
+        processSentence(next);
+      }, 2500); // 2.5s timeout for natural transitions
       return next;
+    });
+  };
+
+  const processSentence = (targetNext?: string[]) => {
+    if (sentenceTimer.current) {
+      clearTimeout(sentenceTimer.current);
+      sentenceTimer.current = null;
+    }
+    
+    setCurrentSentence(prev => {
+      const sentenceToProcess = targetNext || prev;
+      if (sentenceToProcess.length === 0) return [];
+      
+      const finalPhrase = sentenceToProcess.join(' ');
+      addChatMessage(finalPhrase, 'SIGNER');
+      
+      // Send TTS - Move outside or use a small delay to ensure it's unique
+      if (onSystemMessage) {
+        onSystemMessage({ nativeEvent: { data: JSON.stringify({ type: 'TTS', text: finalPhrase }) } } as any);
+      }
+      
+      setTranslationWords(p => Array.from(new Set([...p, ...sentenceToProcess])).slice(-10));
+      return []; // Reset sentence
     });
   };
 
@@ -231,7 +276,7 @@ export default function Dashboard({ onSystemMessage, systemLog }: { onSystemMess
       </View>
 
       <View style={styles.mainWrapper}>
-        <View style={[styles.dualViewSection, isAndroid && styles.androidDualView]}>
+        <View style={[styles.dualViewSection, isAndroid && styles.androidDualView, { flex: 4 }]}>
           
           <View style={[
             styles.masterPanel, 
@@ -241,6 +286,17 @@ export default function Dashboard({ onSystemMessage, systemLog }: { onSystemMess
             <View style={styles.streamFrame}>
               <DetectionEngine ref={detectionRef} onGestureDetected={onGesture} onSystemMessage={onSystemMessage} />
               
+              {/* Live Gesture Caption Overlay */}
+              {isSignActive && currentSentence.length > 0 && (
+                <View style={styles.liveCaptionOverlay}>
+                  <View style={styles.captionBackground}>
+                    <Text style={styles.liveCaptionText}>
+                      {currentSentence.join(' ').toUpperCase()}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
               {/* Camera Switcher */}
               {isSignActive && (
                 <TouchableOpacity 
@@ -263,41 +319,68 @@ export default function Dashboard({ onSystemMessage, systemLog }: { onSystemMess
           {/* Dynamic Voice Panel */}
           {(!isAndroid || isVoiceVisible) && (
             <View style={[styles.masterPanel, isAndroid && styles.androidPanel]}>
-              <View style={styles.panelHeader}>
-                <View style={[styles.headerDot, {backgroundColor: COLORS.highlight}]} />
-                <Text style={styles.panelTitle}>VOICE_VISUAL_INTERFACE</Text>
-                <View style={[styles.badgePro, {backgroundColor: COLORS.highlight}]}><Text style={styles.badgeText}>SYNC</Text></View>
-              </View>
               <View style={styles.visualsFrame}><VideoPlayerGrid words={translationWords} /></View>
               <View style={styles.proVoicePanel}>
                 <TouchableOpacity style={[styles.proVoiceBtn, isListening && styles.proVoiceBtnActive]} onPress={toggleListening}>
                   {isListening ? <Activity size={20} color="white" /> : <Zap size={20} color="white" />}
                   <Text style={styles.proVoiceBtnText}>{isListening ? 'LISTENING_ACTIVE' : 'INITIALIZE_VOICE'}</Text>
                 </TouchableOpacity>
-                <View style={styles.voiceStatus}><Text style={styles.voiceStatusText}>{voiceCaptions}</Text></View>
+                <View style={styles.voiceStatus}>
+                   <Text style={styles.voiceStatusText}>{voiceCaptions.toUpperCase()}</Text>
+                </View>
               </View>
             </View>
           )}
 
         </View>
 
-        {/* Dynamic Caption History */}
-        {(!isAndroid || isHistoryVisible) && (
-          <Animated.View style={[styles.chatSection, { flex: isAndroid ? 0.4 : 0.6, marginTop: 15 }]}>
+        {/* Dynamic Caption Section */}
+        {isHistoryVisible && (
+          <Animated.View style={[styles.chatSection, { flex: isAndroid ? 0.3 : 0.4 }]}>
             <View style={styles.chatHeader}>
               <BarChart3 size={16} color={COLORS.textMuted} />
               <Text style={styles.chatTitle}>CAPTION</Text>
-              <TouchableOpacity onPress={clearHistory} style={styles.historyClearBtn}><Trash2 size={14} color={COLORS.textMuted} /></TouchableOpacity>
+              <View style={styles.chatActions}>
+                <TouchableOpacity onPress={clearHistory} style={styles.historyClearBtn}>
+                  <Trash2 size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setIsHistoryVisible(false)} style={styles.historyClearBtn}>
+                  <EyeOff size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </View>
             </View>
-            <ScrollView ref={chatScrollRef} style={styles.chatScroll} contentContainerStyle={styles.chatContent} horizontal showsHorizontalScrollIndicator={false}>
+            <ScrollView ref={chatScrollRef} style={styles.chatScroll} contentContainerStyle={styles.chatContent}>
               {chatMessages.map(msg => (
                 <View key={msg.id} style={[styles.glassBubble, msg.sender === 'SIGNER' ? styles.signerGlass : styles.speakerGlass]}>
-                  <View style={styles.bubbleHeader}><Database size={8} color={COLORS.textMuted} /><Text style={styles.bubbleSource}>{msg.sender}</Text></View>
+                  <View style={styles.bubbleHeader}>
+                    <Database size={8} color={COLORS.textMuted} />
+                    <Text style={styles.bubbleSource}>{msg.sender} • {msg.timestamp}</Text>
+                  </View>
                   <Text style={[styles.msgText, msg.sender === 'SIGNER' ? styles.signerText : styles.speakerText]}>{msg.text}</Text>
                 </View>
               ))}
+              
+              {currentSentence.length > 0 && (
+                <View style={[styles.glassBubble, styles.signerGlass, styles.pendingBubble]}>
+                  <View style={styles.bubbleHeader}>
+                    <Activity size={8} color={COLORS.primary} />
+                    <Text style={[styles.bubbleSource, {color: COLORS.primary}]}>LIVE...</Text>
+                  </View>
+                  <Text style={[styles.msgText, styles.signerText]}>{currentSentence.join(' ').toUpperCase()}</Text>
+                </View>
+              )}
             </ScrollView>
           </Animated.View>
+        )}
+
+        {!isHistoryVisible && (
+          <TouchableOpacity 
+            style={styles.showCaptionBtn} 
+            onPress={() => setIsHistoryVisible(true)}
+          >
+            <MessageSquare size={16} color="white" />
+            <Text style={styles.showCaptionText}>SHOW CAPTION</Text>
+          </TouchableOpacity>
         )}
       </View>
     </SafeAreaView>
@@ -325,7 +408,7 @@ const styles = StyleSheet.create({
   clearHeaderBtn: { padding: 10 },
   sosBtn: { backgroundColor: COLORS.accent, paddingHorizontal: 15, paddingVertical: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
   sosBtnText: { color: 'white', fontWeight: 'bold', fontSize: 11 },
-  mainWrapper: { flex: 1, padding: 15 },
+  mainWrapper: { flex: 1, padding: 5 },
   dualViewSection: { flex: 2, flexDirection: 'row', gap: 15 },
   androidDualView: { flexDirection: 'column' },
   androidPanel: { flex: 1.5, minHeight: 350 },
@@ -337,15 +420,61 @@ const styles = StyleSheet.create({
   proVoiceBtn: { height: 48, backgroundColor: COLORS.primary, borderRadius: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
   proVoiceBtnActive: { backgroundColor: COLORS.success },
   proVoiceBtnText: { color: 'white', fontWeight: 'bold', fontSize: 11, letterSpacing: 1, marginLeft: 10 },
-  voiceStatus: { height: 15, justifyContent: 'center', alignItems: 'center' },
-  voiceStatusText: { color: COLORS.textMuted, fontSize: 8, fontWeight: 'bold', letterSpacing: 1 },
+  voiceStatus: { height: 25, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
+  voiceStatusText: { color: COLORS.primary, fontSize: 14, fontWeight: 'bold', letterSpacing: 1 },
+  liveCaptionOverlay: {
+    position: 'absolute',
+    bottom: 40,
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  captionBackground: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  liveCaptionText: {
+    color: 'white',
+    fontSize: 28,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: -1, height: 1 },
+    textShadowRadius: 10
+  },
   chatSection: { backgroundColor: 'rgba(30, 41, 59, 0.5)', borderRadius: 24, borderWidth: 1, borderColor: '#334155', overflow: 'hidden' },
   chatHeader: { height: 40, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, backgroundColor: 'rgba(0,0,0,0.2)' },
   chatTitle: { color: '#94a3b8', fontSize: 8, fontWeight: 'bold', marginLeft: 10, flex: 1, letterSpacing: 1 },
+  chatActions: { flexDirection: 'row', gap: 5 },
   historyClearBtn: { padding: 10 },
+  showCaptionBtn: {
+    height: 40,
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  showCaptionText: {
+    color: 'white',
+    fontSize: 9,
+    fontWeight: 'bold',
+    marginLeft: 10,
+    letterSpacing: 1,
+  },
   chatScroll: { flex: 1 },
-  chatContent: { padding: 15, flexDirection: 'row', alignItems: 'center' },
-  glassBubble: { minWidth: 120, padding: 12, borderRadius: 14, marginRight: 15, backgroundColor: 'rgba(15, 23, 42, 0.6)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  chatContent: { padding: 15 },
+  glassBubble: { padding: 12, borderRadius: 14, marginBottom: 12, backgroundColor: 'rgba(15, 23, 42, 0.6)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  pendingBubble: { borderColor: COLORS.primary, borderStyle: 'dashed' },
   signerGlass: { borderLeftWidth: 4, borderLeftColor: COLORS.primary },
   speakerGlass: { borderLeftWidth: 4, borderLeftColor: COLORS.highlight },
   bubbleHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 5 },

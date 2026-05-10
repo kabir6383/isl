@@ -1,7 +1,7 @@
-import React from 'react';
-import { View, Text, StyleSheet, Dimensions, Image } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, Dimensions, Image, ScrollView, TouchableOpacity } from 'react-native';
 import { COLORS, BORDER_RADIUS } from '../constants/Theme';
-import { Play, Info, Mic, Hand } from 'lucide-react-native';
+import { Play, Info, Mic, Hand, Book, History } from 'lucide-react-native';
 
 const { width } = Dimensions.get('window');
 
@@ -9,10 +9,29 @@ interface VideoPlayerGridProps {
   words: string[];
 }
 
+const SIGN_IMAGES: {[key: string]: any} = {
+  'good': require('../assets/sign_good.jpg'),
+  'how are you': require('../assets/sign_how_are_you.png'),
+  'morning': require('../assets/sign_morning.jpg'),
+};
+
 export default function VideoPlayerGrid({ words }: VideoPlayerGridProps) {
-  if (!words || words.length === 0) {
+  const [viewMode, setViewMode] = useState<'STREAM' | 'LIBRARY'>('STREAM');
+
+  const dictionary = ['good', 'how are you', 'morning'];
+
+  const displayWords = viewMode === 'LIBRARY' ? dictionary : words;
+
+  if (viewMode === 'STREAM' && (!words || words.length === 0)) {
     return (
       <View style={styles.emptyContainer}>
+        <View style={styles.tabHeader}>
+           <Text style={styles.gridLabel}></Text>
+           <TouchableOpacity onPress={() => setViewMode('LIBRARY')} style={styles.libraryToggle}>
+              <Book size={14} color={COLORS.primary} />
+              <Text style={styles.libraryToggleText}>LIBRARY</Text>
+           </TouchableOpacity>
+        </View>
         <View style={styles.emptyInner}>
           <View style={styles.iconCircle}>
             <Hand size={32} color={COLORS.primary} />
@@ -24,50 +43,62 @@ export default function VideoPlayerGrid({ words }: VideoPlayerGridProps) {
     );
   }
 
-  // Two-Way Mapping: Voice/Sign -> Local Dataset Images
-  // We use the first image from User_1 as the representative visual for the sign
-  const getSignVisual = (word: string) => {
-    const basePath = 'file:///C:/Users/acer/OneDrive/Desktop/islrs/dataset';
-    const map: {[key: string]: string} = {
-      'agree': `${basePath}/agree/User_1/agree_1_User1_1.jpg`,
-      'from': `${basePath}/from/User_1/from_1_User1_1.jpg`,
-      'specific': `${basePath}/specific/User_1/specific_1_User1_1.jpg`,
-      'you': `${basePath}/you/User_1/you_1_User1_1.jpg`,
-    };
-    
-    // Default placeholder if word not found
-    return map[word.toLowerCase()] || 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM2ZkbHpwNXZocGhzbmhybmhzbmhybmhzbmhybmhzbmhybmhzbmhyJmVwPXYxX2ludGVybmFsX2dpZl9ieV9pZCZjdD1n/3o7TKURRndfP6X4M7u/giphy.gif';
-  };
-
   return (
     <View style={styles.grid}>
-      <Text style={styles.gridLabel}>DATASET VISUAL REFERENCE</Text>
-      <View style={styles.cardsRow}>
-        {words.map((word, index) => (
-          <View key={index} style={styles.card}>
-            <View style={styles.visualWrapper}>
-              <Image 
-                source={{ uri: getSignVisual(word) }} 
-                style={styles.image} 
-                resizeMode="cover" 
-              />
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>USER_1_SAMPLE</Text>
+      <View style={styles.tabHeader}>
+        <Text style={styles.gridLabel}></Text>
+        <TouchableOpacity 
+          onPress={() => setViewMode(viewMode === 'STREAM' ? 'LIBRARY' : 'STREAM')} 
+          style={styles.libraryToggle}
+        >
+          {viewMode === 'STREAM' ? (
+            <>
+              <Book size={14} color={COLORS.primary} />
+              <Text style={styles.libraryToggleText}>LIBRARY</Text>
+            </>
+          ) : (
+            <>
+              <History size={14} color={COLORS.highlight} />
+              <Text style={[styles.libraryToggleText, {color: COLORS.highlight}]}>STREAM</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+      
+      <ScrollView 
+        style={styles.scrollContainer} 
+        contentContainerStyle={styles.cardsRow}
+        showsVerticalScrollIndicator={false}
+      >
+        {displayWords.map((word, index) => {
+          const signImage = SIGN_IMAGES[word.toLowerCase()];
+
+          return (
+            <View key={`${viewMode}-${word}-${index}`} style={styles.card}>
+              <View style={styles.visualWrapper}>
+                {signImage ? (
+                  <Image 
+                    source={signImage} 
+                    style={styles.image} 
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={styles.placeholderCard}><Text style={styles.placeholderText}>NO IMAGE</Text></View>
+                )}
+              </View>
+              <View style={styles.cardFooter}>
+                 <Text style={styles.wordText}>{word.toUpperCase()}</Text>
               </View>
             </View>
-            <View style={styles.cardFooter}>
-               <Text style={styles.wordText}>{word.toUpperCase()}</Text>
-            </View>
-          </View>
-        ))}
+          );
+        })}
         
-        {/* Fill remaining slots to maintain grid layout */}
-        {[...Array(Math.max(0, 4 - words.length))].map((_, i) => (
+        {viewMode === 'STREAM' && words.length < 4 && [...Array(4 - words.length)].map((_, i) => (
           <View key={`fill-${i}`} style={styles.placeholderCard}>
              <Text style={styles.placeholderText}>WAITING...</Text>
           </View>
         ))}
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -78,11 +109,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
     borderRadius: BORDER_RADIUS.xl,
-    justifyContent: 'center',
-    alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.3)',
     minHeight: 250,
-    padding: 20,
+    padding: 15,
+  },
+  tabHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  libraryToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  libraryToggleText: {
+    color: COLORS.primary,
+    fontSize: 8,
+    fontWeight: 'bold',
+    letterSpacing: 1,
   },
   iconCircle: {
     width: 50,
@@ -94,7 +146,9 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   emptyInner: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyText: {
     color: 'white',
@@ -114,13 +168,16 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     fontSize: 8,
     fontWeight: 'bold',
-    marginBottom: 10,
     letterSpacing: 1,
+  },
+  scrollContainer: {
+    flex: 1,
   },
   cardsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
+    paddingBottom: 20,
   },
   card: {
     width: '48%',
@@ -139,20 +196,6 @@ const styles = StyleSheet.create({
   },
   image: {
     flex: 1,
-  },
-  badge: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 4,
-  },
-  badgeText: {
-    color: 'white',
-    fontSize: 6,
-    fontWeight: 'bold',
   },
   cardFooter: {
     padding: 10,

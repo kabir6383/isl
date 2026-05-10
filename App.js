@@ -31,13 +31,13 @@ export default function App() {
     try {
       const data = JSON.parse(event.nativeEvent.data);
       
-      // Handle Speech for both TTS and GESTURE types to ensure 100% coverage
-      if (data.type === 'TTS' || data.type === 'GESTURE') {
-        const textToSpeak = data.type === 'TTS' ? data.text : data.value;
+      // Handle Speech for full phrases (TTS)
+      if (data.type === 'TTS') {
+        const textToSpeak = data.text;
         const now = Date.now();
 
-        // Prevent redundant speaking of the same word in short bursts
-        if (textToSpeak === lastSpoken.text && now - lastSpoken.time < 1500) {
+        // DEBOUNCE: Prevent double-speaking the same phrase
+        if (textToSpeak === lastSpoken.text && now - lastSpoken.time < 2000) {
           return;
         }
 

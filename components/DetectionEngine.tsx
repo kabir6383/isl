@@ -69,7 +69,11 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
     <html>
     <head>
       <meta charset="utf-8">
-      <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
       <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
       <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
       <style>
@@ -113,13 +117,18 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
       <div id="container">
         <video id="input_video" playsinline muted autoplay></video>
         <canvas id="output_canvas"></canvas>
-        <div id="status">INITIALIZING_AI_CORE...</div>
+        <div id="status">INITIALIZING_HOLISTIC_ENGINE...</div>
       </div>
       <script>
         const video = document.getElementById('input_video');
         const canvas = document.getElementById('output_canvas');
         const status = document.getElementById('status');
         const ctx = canvas.getContext('2d', { alpha: false });
+        let currentFacingMode = 'user';
+        let cameraInstance = null;
+        let isProcessing = false;
+        let isCameraEnabled = true;
+        let latestResults = null;
 
         function sendMsg(data) {
           const s = JSON.stringify(data);
@@ -128,12 +137,20 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
         }
 
         window.MODEL_DATA = ${weightsJson};
-        const handStates = [{ last: "", count: 0, buffer: [] }];
-        let latestLandmarks = [];
-        let currentFacingMode = 'user';
-        let cameraInstance = null;
-        let isProcessing = false;
-        let isCameraEnabled = true;
+        const handStates = [
+          { last: "", buffer: [] }, 
+          { last: "", buffer: [] }
+        ];
+
+        function getMajority(buffer) {
+          const counts = {};
+          buffer.forEach(x => counts[x] = (counts[x] || 0) + 1);
+          let max = 0, label = "";
+          for (const key in counts) {
+            if (counts[key] > max) { max = counts[key]; label = key; }
+          }
+          return { label, count: max };
+        }
 
         window.addEventListener('message', (e) => {
           try {
@@ -143,8 +160,30 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
           } catch(err){}
         });
 
-        function predict(input) {
-          if (!window.MODEL_DATA) return null;
+        function predict(landmarks) {
+          if (!window.MODEL_DATA || !landmarks) return null;
+          const bx = landmarks[0].x, by = landmarks[0].y;
+          const dx = landmarks[9].x - bx, dy = landmarks[9].y - by;
+          const scale = Math.sqrt(dx*dx + dy*dy) || 0.1;
+          const angle = Math.atan2(dy, dx);
+          const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
+
+          const input = [];
+          for (let i = 0; i < 21; i++) {
+            const tx = (landmarks[i].x - bx) / scale, ty = (landmarks[i].y - by) / scale;
+            input.push(tx * cosA - ty * sinA);
+            input.push(tx * sinA + ty * cosA);
+          }
+          for (let i = 0; i < 21; i++) {
+            const d = Math.sqrt(Math.pow(landmarks[i].x - bx, 2) + Math.pow(landmarks[i].y - by, 2)) / scale;
+            input.push(d);
+          }
+          const pairs = [[4,8], [8,12], [12,16], [16,20], [4,20]];
+          for (const [p1, p2] of pairs) {
+            const d = Math.sqrt(Math.pow(landmarks[p1].x - landmarks[p2].x, 2) + Math.pow(landmarks[p1].y - landmarks[p2].y, 2)) / scale;
+            input.push(d);
+          }
+          
           let current = input;
           for (let i = 0; i < window.MODEL_DATA.layers.length; i++) {
             const layer = window.MODEL_DATA.layers[i];
@@ -172,42 +211,32 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
 
         function onResults(results) {
           if (!isCameraEnabled) return;
-          latestLandmarks = results.multiHandLandmarks || [];
-          if (latestLandmarks.length === 0) {
-            sendMsg({ type: 'GESTURE_CLEAR', allProbs: { "agree": 0, "from": 0, "specific": 0, "you": 0 } });
-            return;
+          latestResults = results;
+
+          if (!results.leftHandLandmarks && !results.rightHandLandmarks) {
+            sendMsg({ type: 'GESTURE_CLEAR', allProbs: {} });
+            sendMsg({ type: 'GESTURE_END' }); // Immediate end
           }
 
-          latestLandmarks.forEach((landmarks, index) => {
-            if (index >= 1) return;
-            const bx = landmarks[0].x, by = landmarks[0].y;
-            const dx = landmarks[9].x - bx, dy = landmarks[9].y - by;
-            const scale = Math.sqrt(dx*dx + dy*dy) || 0.1;
-            const angle = Math.atan2(dy, dx);
-            const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
-
-            const input = [];
-            for (let i = 0; i < 21; i++) {
-              const tx = (landmarks[i].x - bx) / scale, ty = (landmarks[i].y - by) / scale;
-              input.push(tx * cosA - ty * sinA);
-              input.push(tx * sinA + ty * cosA);
-            }
-            for (let i = 0; i < 21; i++) {
-              const d = Math.sqrt(Math.pow(landmarks[i].x - bx, 2) + Math.pow(landmarks[i].y - by, 2)) / scale;
-              input.push(d);
-            }
-            const pairs = [[4,8], [8,12], [12,16], [16,20], [4,20]];
-            for (const [p1, p2] of pairs) {
-              const d = Math.sqrt(Math.pow(landmarks[p1].x - landmarks[p2].x, 2) + Math.pow(landmarks[p1].y - landmarks[p2].y, 2)) / scale;
-              input.push(d);
+          // Process Hands for Gestures
+          [results.leftHandLandmarks, results.rightHandLandmarks].forEach((landmarks, index) => {
+            if (!landmarks) {
+              handStates[index].buffer = [];
+              return;
             }
             
-            const pred = predict(input);
-            if (pred && pred.confidence > 0.85) {
+            const pred = predict(landmarks);
+            if (pred && pred.confidence > 0.75) {
               const state = handStates[index];
-              if (pred.label !== state.last) {
-                 sendMsg({ type: 'GESTURE', value: pred.label, handIndex: index, confidence: pred.confidence, allProbs: pred.allProbs });
-                 state.last = pred.label;
+              state.buffer.push(pred.label);
+              if (state.buffer.length > 3) state.buffer.shift();
+
+              const majority = getMajority(state.buffer);
+              if (majority.count >= 2 && majority.label !== "None" && majority.label !== state.last) {
+                 sendMsg({ type: 'GESTURE', value: majority.label, handIndex: index, confidence: pred.confidence, allProbs: pred.allProbs });
+                 state.last = majority.label;
+              } else if (majority.label === "None") {
+                 state.last = "None";
               }
             }
           });
@@ -216,12 +245,16 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
         function renderLoop() {
           if (isCameraEnabled && video.readyState >= 2) {
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            if (latestLandmarks.length > 0) {
-              latestLandmarks.forEach((landmarks, index) => {
-                if (index >= 1) return;
-                drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {color: '#38bdf8', lineWidth: 4});
-                drawLandmarks(ctx, landmarks, {color: '#FFFFFF', lineWidth: 2, radius: 3});
-              });
+            if (latestResults) {
+              // Draw Hands ONLY (Priority 1)
+              if (latestResults.leftHandLandmarks) {
+                drawConnectors(ctx, latestResults.leftHandLandmarks, HAND_CONNECTIONS, {color: '#38bdf8', lineWidth: 4});
+                drawLandmarks(ctx, latestResults.leftHandLandmarks, {color: '#FFFFFF', lineWidth: 1, radius: 2});
+              }
+              if (latestResults.rightHandLandmarks) {
+                drawConnectors(ctx, latestResults.rightHandLandmarks, HAND_CONNECTIONS, {color: '#38bdf8', lineWidth: 4});
+                drawLandmarks(ctx, latestResults.rightHandLandmarks, {color: '#FFFFFF', lineWidth: 1, radius: 2});
+              }
             }
           } else {
             ctx.fillStyle = '#000';
@@ -231,9 +264,16 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
         }
         renderLoop();
 
-        const hands = new Hands({locateFile: (f) => "https://cdn.jsdelivr.net/npm/@mediapipe/hands/" + f});
-        hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-        hands.onResults(onResults);
+        const holistic = new Holistic({locateFile: (f) => "https://cdn.jsdelivr.net/npm/@mediapipe/holistic/" + f});
+        holistic.setOptions({
+          modelComplexity: 0,
+          smoothLandmarks: true,
+          enableSegmentation: false,
+          refineFaceLandmarks: false,
+          minDetectionConfidence: 0.6,
+          minTrackingConfidence: 0.6
+        });
+        holistic.onResults(onResults);
 
         async function initCamera() {
           if (cameraInstance) { try { await cameraInstance.stop(); } catch(e){} cameraInstance = null; }
@@ -242,17 +282,22 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
 
           try {
             const stream = await navigator.mediaDevices.getUserMedia({
-              video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: currentFacingMode }
+              video: { 
+                width: { ideal: 320 }, 
+                height: { ideal: 240 }, 
+                frameRate: { ideal: 15 },
+                facingMode: currentFacingMode 
+              }
             });
             video.srcObject = stream;
             video.onloadedmetadata = () => {
               video.play();
               cameraInstance = new Camera(video, {
-                onFrame: async () => { if (!isProcessing && isCameraEnabled) { isProcessing = true; try { await hands.send({image: video}); } catch(e){} isProcessing = false; } },
-                width: 640, height: 480
+                onFrame: async () => { if (!isProcessing && isCameraEnabled) { isProcessing = true; try { await holistic.send({image: video}); } catch(e){} isProcessing = false; } },
+                width: 320, height: 240
               });
               cameraInstance.start().then(() => {
-                status.innerText = 'LITE_ENGINE: ' + currentFacingMode.toUpperCase();
+                status.innerText = '';
                 sendMsg({type: 'LOG', msg: 'Lens Active: ' + currentFacingMode});
               });
             };
@@ -269,9 +314,9 @@ const DetectionEngine = forwardRef<DetectionEngineRef, DetectionEngineProps>(({ 
         window.setCameraActive = (active) => {
           isCameraEnabled = active;
           if (!active) {
-            status.innerText = 'SYSTEM_OFFLINE';
-            latestLandmarks = [];
-            sendMsg({ type: 'GESTURE_CLEAR', allProbs: { "agree": 0, "from": 0, "specific": 0, "you": 0 } });
+            status.innerText = '';
+            latestResults = null;
+            sendMsg({ type: 'GESTURE_CLEAR', allProbs: {} });
           }
           initCamera();
         };
